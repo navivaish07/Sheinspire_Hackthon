@@ -1,0 +1,1 @@
+# GitHub Upload Plan for Sheinspire_Hackthon\n\n## Steps:\n- [ ] 1. Create .gitignore\n- [ ] 2. git init\n- [ ] 3. git remote add origin https://github.com/navivaish07/Sheinspire_Hackthon.git\n- [ ] 4. git add .\n- [ ] 5. git commit -m "Initial commit: Sheinspire Hackathon project"\n- [ ] 6. git branch -M main\n- [ ] 7. git push -u origin main\n- [ ] 8. Verify upload

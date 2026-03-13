@@ -1,0 +1,6 @@
+# Sheinspire_Hackthon
+<<<<<<< HEAD
+AI-DRIVEN LEGACY APPLICATION CLOUD MIGRATION &amp; MICROSERVICE RECOMMENDATION SYSTEM
+=======
+navivaish07/Sheinspire_Hackthon
+>>>>>>> a9b252fe071577a48fdfba5978ed09a4c61b7340
