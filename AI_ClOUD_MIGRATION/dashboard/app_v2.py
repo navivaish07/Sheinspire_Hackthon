@@ -773,7 +773,43 @@ def generate_migration_batches(services, dependencies):
     return batches
 
 
-def create_dependency_graph(df):
+def get_service_details(df, service_name):
+    """Get detailed information about a service including dependencies."""
+    import networkx as nx
+    from agents.dependency_graph import build_dependency_graph, get_upstream_dependencies, get_downstream_dependencies
+    
+    deps = discover_dependencies(df=df)
+    G = build_dependency_graph(dependencies=deps)
+    risk_df = calculate_risk_scores(df=df)
+    
+    if service_name not in G.nodes():
+        return None
+    
+    upstream = list(G.predecessors(service_name))  # Services that depend on this one
+    downstream = list(G.successors(service_name))  # Services this one depends on
+    
+    risk_data = risk_df[risk_df['service'] == service_name]
+    if not risk_data.empty:
+        risk_score = risk_data['risk_score'].iloc[0]
+        risk_level = risk_data['risk_level'].iloc[0]
+        dep_count = risk_data['dependency_count'].iloc[0]
+    else:
+        risk_score = 50
+        risk_level = "Medium"
+        dep_count = len(upstream) + len(downstream)
+    
+    return {
+        'service': service_name,
+        'risk_level': risk_level,
+        'risk_score': risk_score,
+        'total_dependencies': dep_count,
+        'upstream_dependencies': upstream,  # Services that call this service
+        'downstream_dependencies': downstream,  # Services this service calls
+        'degree': G.degree(service_name)
+    }
+
+
+def create_dependency_graph(df, filter_service=None):
     """Create an interactive Plotly network graph for service dependencies with hover tooltips."""
     import networkx as nx
 
@@ -781,6 +817,21 @@ def create_dependency_graph(df):
     risk_df = calculate_risk_scores(df=df)
 
     G = build_dependency_graph(dependencies=deps)
+
+    # Filter graph if filter_service is provided
+    matching_nodes = []
+    if filter_service:
+        # Find nodes that match (partial, case insensitive)
+        matching_nodes = [node for node in G.nodes() if filter_service.lower() in node.lower()]
+        if matching_nodes:
+            # Combine subgraphs for all matching nodes
+            subgraph_nodes = set()
+            for target_node in matching_nodes:
+                subgraph_nodes.add(target_node)
+                subgraph_nodes.update(nx.ancestors(G, target_node))
+                subgraph_nodes.update(nx.descendants(G, target_node))
+            G = G.subgraph(subgraph_nodes).copy()
+        # If no match, show full graph
 
     # Get node positions using spring layout
     pos = nx.spring_layout(G, k=1, iterations=50, seed=42)
@@ -830,16 +881,22 @@ def create_dependency_graph(df):
             risk_level = "Medium"
             dep_count = G.degree(node)
 
-        # Set color based on risk level
-        if risk_level == "High":
-            color = "#f85149"
-        elif risk_level == "Medium":
-            color = "#d29922"
+        # Special highlighting for matching nodes
+        if node in matching_nodes:
+            color = "#00d4ff"  # Bright blue for searched services
+            size = 25 + (risk_score / 100) * 40  # Larger size
         else:
-            color = "#3fb950"
+            # Set color based on risk level
+            if risk_level == "High":
+                color = "#f85149"
+            elif risk_level == "Medium":
+                color = "#d29922"
+            else:
+                color = "#3fb950"
+            size = 20 + (risk_score / 100) * 30
 
         node_colors.append(color)
-        node_sizes.append(20 + (risk_score / 100) * 30)
+        node_sizes.append(size)
 
         # Create hover text
         hover_text = f"""
@@ -848,6 +905,15 @@ def create_dependency_graph(df):
         Risk Score: {risk_score}<br>
         Dependencies: {dep_count}
         """
+        
+        # Add dependency details for matching nodes
+        if node in matching_nodes:
+            upstream = list(G.predecessors(node))
+            downstream = list(G.successors(node))
+            if upstream:
+                hover_text += f"<br><b>Services that depend on this:</b><br>" + "<br>".join([f"• {s}" for s in upstream])
+            if downstream:
+                hover_text += f"<br><b>This service depends on:</b><br>" + "<br>".join([f"• {s}" for s in downstream])
 
         node_texts.append(hover_text)
 
@@ -871,6 +937,16 @@ def create_dependency_graph(df):
         ),
         showlegend=False
     ))
+
+    # Zoom on matching nodes if any
+    if matching_nodes and pos:
+        # Center on the first matching node
+        target_node = matching_nodes[0]
+        if target_node in pos:
+            tx, ty = pos[target_node]
+            zoom_factor = 1.5  # Adjust for zoom level
+            fig.update_xaxes(range=[tx - zoom_factor, tx + zoom_factor])
+            fig.update_yaxes(range=[ty - zoom_factor, ty + zoom_factor])
 
     # Update layout
     fig.update_layout(
@@ -1297,8 +1373,50 @@ def main():
         col1, col2 = st.columns([3, 1], gap="large")
 
         with col1:
-            graph_fig = create_dependency_graph(telemetry_df)
+            # Search input in top-right corner of graph container
+            # This implements the service-level search feature for filtering the dependency graph
+            search_col1, search_col2 = st.columns([4, 1])
+            with search_col1:
+                st.empty()  # Empty to push search to right
+            with search_col2:
+                search_service = st.text_input(
+                    "",
+                    key="graph_search",
+                    placeholder="🔍 Search service...",
+                    label_visibility="collapsed",
+                    help="Type a service name to filter the dependency graph to show only its upstream and downstream dependencies"
+                )
+            
+            # Create graph with filter
+            graph_fig = create_dependency_graph(telemetry_df, filter_service=search_service if search_service else None)
             st.plotly_chart(graph_fig, use_container_width=True, height=500)
+            
+            # Show service details if searching
+            if search_service:
+                details = get_service_details(telemetry_df, search_service)
+                if details:
+                    with st.expander(f"📋 Details for {details['service']}", expanded=True):
+                        col_a, col_b = st.columns(2)
+                        with col_a:
+                            st.markdown(f"**Risk Level:** {details['risk_level']} (Score: {details['risk_score']})")
+                            st.markdown(f"**Total Dependencies:** {details['total_dependencies']}")
+                            st.markdown(f"**Graph Degree:** {details['degree']}")
+                        with col_b:
+                            st.markdown("**Services that depend on this service (Upstream):**")
+                            if details['upstream_dependencies']:
+                                for dep in details['upstream_dependencies']:
+                                    st.markdown(f"- {dep}")
+                            else:
+                                st.markdown("*None*")
+                            
+                            st.markdown("**Services this service depends on (Downstream):**")
+                            if details['downstream_dependencies']:
+                                for dep in details['downstream_dependencies']:
+                                    st.markdown(f"- {dep}")
+                            else:
+                                st.markdown("*None*")
+                else:
+                    st.info("No service found matching the search term.")
 
         with col2:
             st.markdown(
@@ -1596,8 +1714,50 @@ def main():
         col1, col2 = st.columns([3, 1], gap="large")
 
         with col1:
-            graph_fig = create_dependency_graph(telemetry_df)
+            # Search input in top-right corner of graph container
+            # This implements the service-level search feature for filtering the dependency graph
+            search_col1, search_col2 = st.columns([4, 1])
+            with search_col1:
+                st.empty()  # Empty to push search to right
+            with search_col2:
+                search_service = st.text_input(
+                    "",
+                    key="graph_search_section4",
+                    placeholder="🔍 Search service...",
+                    label_visibility="collapsed",
+                    help="Type a service name to filter the dependency graph to show only its upstream and downstream dependencies"
+                )
+            
+            # Create graph with filter
+            graph_fig = create_dependency_graph(telemetry_df, filter_service=search_service if search_service else None)
             st.plotly_chart(graph_fig, use_container_width=True, height=650)
+            
+            # Show service details if searching
+            if search_service:
+                details = get_service_details(telemetry_df, search_service)
+                if details:
+                    with st.expander(f"📋 Details for {details['service']}", expanded=True):
+                        col_a, col_b = st.columns(2)
+                        with col_a:
+                            st.markdown(f"**Risk Level:** {details['risk_level']} (Score: {details['risk_score']})")
+                            st.markdown(f"**Total Dependencies:** {details['total_dependencies']}")
+                            st.markdown(f"**Graph Degree:** {details['degree']}")
+                        with col_b:
+                            st.markdown("**Services that depend on this service (Upstream):**")
+                            if details['upstream_dependencies']:
+                                for dep in details['upstream_dependencies']:
+                                    st.markdown(f"- {dep}")
+                            else:
+                                st.markdown("*None*")
+                            
+                            st.markdown("**Services this service depends on (Downstream):**")
+                            if details['downstream_dependencies']:
+                                for dep in details['downstream_dependencies']:
+                                    st.markdown(f"- {dep}")
+                            else:
+                                st.markdown("*None*")
+                else:
+                    st.info("No service found matching the search term.")
 
         with col2:
             st.markdown(
